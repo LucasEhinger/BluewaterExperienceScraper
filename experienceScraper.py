@@ -177,8 +177,12 @@ def main():
 
   start_year = 2007
   start_month = 1
-  end_year = 2024
-  end_month = 11 # December 2024 doesn't exist, and defaults to September 2024. https://sailing.mit.edu/calendar/index.php?cal=month&year=2024&month=12
+  # Scrape from the start year through the present month. Using the current
+  # date keeps the dataset up to date automatically (through 2027 and beyond)
+  # when run on a schedule, without needing to bump the end date by hand.
+  now = datetime.now()
+  end_year = now.year
+  end_month = now.month
 
   for year in range(start_year, end_year+1):
     for month in range(1, 13):
