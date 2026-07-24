@@ -115,23 +115,36 @@ def get_skippers(html):
             details.append((last_name, first_name, "Skipper"))
     return details
 
+def get_event_id(url):
+    match = re.search(r'[?&]id=([0-9a-fA-F]+)', url)
+    return match.group(1) if match else url
+
+
 def get_all_participant_data(year, month):
     urls = get_trip_urls(year, month)
     data=[]
     for url in urls:
-        page = urlopen(url)
-        html_bytes = page.read()
-        html = html_bytes.decode("utf-8", errors='ignore')
+        try:
+            page = urlopen(url)
+            html_bytes = page.read()
+            html = html_bytes.decode("utf-8", errors='ignore')
 
-        title = get_title(html)
-        start, end, hours = get_time_data(html)
-        racing = is_racing(html)
-        participants = get_participant_status(html)
-        skippers=get_skippers(html)
-        sailors = participants + skippers
+            event_id = get_event_id(url)
+            title = get_title(html)
+            start, end, hours = get_time_data(html)
+            racing = is_racing(html)
+            participants = get_participant_status(html)
+            skippers=get_skippers(html)
+            sailors = participants + skippers
+        except Exception as err:
+            # Some calendar entries (e.g. work days / all-day events) don't
+            # parse cleanly; skip them rather than aborting the whole scrape.
+            print(f"  WARNING: skipping {url}: {err}")
+            continue
 
         for last_name, first_name, status in sailors:
             data.append({
+                "event id": event_id,
                 "first name": first_name,
                 "last name": last_name,
                 "trip name": title,
@@ -143,31 +156,39 @@ def get_all_participant_data(year, month):
             })
 
     df = pd.DataFrame(data, columns=[
-        "first name", "last name", "trip name", "start", "end", "duration", "race", "status"
+        "event id", "first name", "last name", "trip name", "start", "end", "duration", "race", "status"
     ])
     return df
 
 
 
-columns = [
+def main():
+  columns = [
     "first name", "last name", "number registrations", "number sails",
     "number races", "number pleasure", "number multi-day",
     "number full day (6+ hr)", "number as skipper", "total sail time (hrs)"
-]
-df_final = pd.DataFrame(columns=columns)
+  ]
+  df_final = pd.DataFrame(columns=columns)
 
-start_year = 2007
-start_month = 1
-end_year = 2024
-end_month = 11 # December 2024 doesn't exist, and defaults to September 2024. https://sailing.mit.edu/calendar/index.php?cal=month&year=2024&month=12
+  # Event-level records are accumulated here and written to sailing_events.csv
+  # so downstream tools can aggregate over arbitrary date ranges and build
+  # per-person sail histories.
+  event_frames = []
 
-for year in range(start_year, end_year+1):
+  start_year = 2007
+  start_month = 1
+  end_year = 2024
+  end_month = 11 # December 2024 doesn't exist, and defaults to September 2024. https://sailing.mit.edu/calendar/index.php?cal=month&year=2024&month=12
+
+  for year in range(start_year, end_year+1):
     for month in range(1, 13):
         if year == start_year and month < start_month:
             continue
         if year == end_year and month > end_month:
             break
+        print(f"Scraping {year}-{month:02d} ...", flush=True)
         df_all = get_all_participant_data(year, month)
+        event_frames.append(df_all)
         for index, row in df_all.iterrows():
             first_name = row["first name"]
             last_name = row["last name"]
@@ -220,7 +241,15 @@ for year in range(start_year, end_year+1):
 
 
 
-df_final_sorted = df_final.sort_values(by="total sail time (hrs)", ascending=False)
-# df_final_sorted = df_final.sort_values(by="number sails", ascending=False)
-print(df_final_sorted)
-df_final_sorted.to_csv("sailing_data_all_time.csv", index=False)
+  # Write the event-level records (one row per participant per event).
+  events_df = pd.concat(event_frames, ignore_index=True) if event_frames else pd.DataFrame()
+  events_df.to_csv("sailing_events.csv", index=False)
+  print(f"Wrote {len(events_df)} event-participant rows to sailing_events.csv")
+
+  df_final_sorted = df_final.sort_values(by="total sail time (hrs)", ascending=False)
+  print(df_final_sorted)
+  df_final_sorted.to_csv("sailing_data_all_time.csv", index=False)
+
+
+if __name__ == "__main__":
+    main()
