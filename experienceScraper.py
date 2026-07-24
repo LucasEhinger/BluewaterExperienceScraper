@@ -124,6 +124,29 @@ def river_sail(title):
     # River sails aren't part of the bluewater keelboat program; exclude them.
     return "river" in (title or "").lower()
 
+# Keywords marking calendar entries that aren't actual sails: boat maintenance /
+# work days / haul-outs, IAP and other shore-school classes, and info sessions /
+# meetings. Matched as case-insensitive substrings of the event title.
+NON_SAILING_KEYWORDS = [
+    # maintenance / workdays / haul-outs / rigging
+    "work day", "workday", "work party", "workparty", "work session",
+    "working party", "winteriz", "dewinter", "haul out", "haulout", "haul-out",
+    "repair", "winter prep", "rigging", "downrigging", "gear retrieval",
+    # shore school / classes (IAP + standalone class topics)
+    "iap", "shore school", "celestial nav", "navigation part", "safety at sea",
+    "science of knots", "splices", "living aboard", "chartwork", "chartering",
+    "sailing beyond mit", "day skipper", "sailing safely", "weather and enav",
+    "intro to bluewater", "intro to keelboat", "introduction to keelboat",
+    "intro to offshore", "offshore sailing school",
+    # info sessions / meetings / social
+    "info session", "info sess", "cruising info", "crew info", "meeting",
+    "awards", "mbsa", "history",
+]
+
+def non_sailing_event(title):
+    tl = (title or "").lower()
+    return any(k in tl for k in NON_SAILING_KEYWORDS)
+
 
 def get_all_participant_data(year, month):
     urls = get_trip_urls(year, month)
@@ -164,9 +187,10 @@ def get_all_participant_data(year, month):
         "event id", "first name", "last name", "trip name", "start", "end", "duration", "race", "status"
     ])
     if not df.empty:
-        # Drop river sails (not part of the bluewater program) and any exact
-        # duplicate rows within this month.
+        # Drop river sails and non-sailing entries (work days, classes, meetings),
+        # plus any exact duplicate rows within this month.
         df = df[~df["trip name"].apply(river_sail)]
+        df = df[~df["trip name"].apply(non_sailing_event)]
         df = df.drop_duplicates(
             subset=["event id", "first name", "last name", "trip name",
                     "start", "end", "duration", "race", "status"],
