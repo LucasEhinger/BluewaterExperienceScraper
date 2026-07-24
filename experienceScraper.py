@@ -63,21 +63,23 @@ def get_time_data(html):
     return start_datetime, end_datetime, hours_elapsed
 
 def is_racing(html):
-    url = re.search(r'/calendar/events/event.php([^"]*)\'>Description', html)
-    if not url:
-        return False
-    url = base_url = "http://sailing.mit.edu/calendar/events/event.php"+ url.group(1)
-    page = urlopen(url)
-    html_bytes = page.read()
-    html = html_bytes.decode("utf-8", errors='ignore')
-
-    description = re.search(r'<h2>Description</h2>(.*?)<h2>Organizers</h2>', html, re.DOTALL)
-    if not description:
-        return False
-    description=description.group(1).strip()
-
     keywords = ["race", "racing", "regatta", "cup"]
-    text = description + get_title(html)
+    # The entries-page title is always available and usually indicates a race;
+    # check it unconditionally so a failed event-page fetch can't hide a race.
+    text = get_title(html)
+
+    # Additionally fold in the linked event page's description when reachable.
+    match = re.search(r'/calendar/events/event.php([^"]*)\'>Description', html)
+    if match:
+        try:
+            event_url = "http://sailing.mit.edu/calendar/events/event.php" + match.group(1)
+            event_html = urlopen(event_url).read().decode("utf-8", errors='ignore')
+            description = re.search(r'<h2>Description</h2>(.*?)<h2>Organizers</h2>', event_html, re.DOTALL)
+            if description:
+                text += " " + description.group(1)
+        except Exception:
+            pass  # fall back to the title alone
+
     lower_text = text.lower()
     return any(keyword in lower_text for keyword in keywords)
 
