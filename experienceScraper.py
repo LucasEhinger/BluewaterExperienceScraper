@@ -6,6 +6,7 @@
 
 # There are better ways to organize this code, but I'm lazy and it runs quickly enough
 
+import os
 import pandas as pd
 import re
 from urllib.request import urlopen
@@ -62,21 +63,23 @@ def get_time_data(html):
     return start_datetime, end_datetime, hours_elapsed
 
 def is_racing(html):
-    url = re.search(r'/calendar/events/event.php([^"]*)\'>Description', html)
-    if not url:
-        return False
-    url = base_url = "http://sailing.mit.edu/calendar/events/event.php"+ url.group(1)
-    page = urlopen(url)
-    html_bytes = page.read()
-    html = html_bytes.decode("utf-8", errors='ignore')
+    keywords = ["race", "racing", "regatta", "cup"]
+    # The entries-page title is always available and usually indicates a race;
+    # check it unconditionally so a failed event-page fetch can't hide a race.
+    text = get_title(html)
 
-    description = re.search(r'<h2>Description</h2>(.*?)<h2>Organizers</h2>', html, re.DOTALL)
-    if not description:
-        return False
-    description=description.group(1).strip()
+    # Additionally fold in the linked event page's description when reachable.
+    match = re.search(r'/calendar/events/event.php([^"]*)\'>Description', html)
+    if match:
+        try:
+            event_url = "http://sailing.mit.edu/calendar/events/event.php" + match.group(1)
+            event_html = urlopen(event_url).read().decode("utf-8", errors='ignore')
+            description = re.search(r'<h2>Description</h2>(.*?)<h2>Organizers</h2>', event_html, re.DOTALL)
+            if description:
+                text += " " + description.group(1)
+        except Exception:
+            pass  # fall back to the title alone
 
-    keywords = ["race", "regatta", "cup"]
-    text = description + get_title(html)
     lower_text = text.lower()
     return any(keyword in lower_text for keyword in keywords)
 
@@ -115,23 +118,63 @@ def get_skippers(html):
             details.append((last_name, first_name, "Skipper"))
     return details
 
+def get_event_id(url):
+    match = re.search(r'[?&]id=([0-9a-fA-F]+)', url)
+    return match.group(1) if match else url
+
+def river_sail(title):
+    # River sails aren't part of the bluewater keelboat program; exclude them.
+    return "river" in (title or "").lower()
+
+# Keywords marking calendar entries that aren't actual sails: boat maintenance /
+# work days / haul-outs, IAP and other shore-school classes, and info sessions /
+# meetings. Matched as case-insensitive substrings of the event title.
+NON_SAILING_KEYWORDS = [
+    # maintenance / workdays / haul-outs / rigging
+    "work day", "workday", "work party", "workparty", "work session",
+    "working party", "winteriz", "dewinter", "haul out", "haulout", "haul-out",
+    "repair", "winter prep", "rigging", "downrigging", "gear retrieval",
+    # shore school / classes (IAP + standalone class topics)
+    "iap", "shore school", "celestial nav", "navigation part", "safety at sea",
+    "science of knots", "splices", "living aboard", "chartwork", "chartering",
+    "sailing beyond mit", "day skipper", "sailing safely", "weather and enav",
+    "intro to bluewater", "intro to keelboat", "introduction to keelboat",
+    "intro to offshore", "offshore sailing school",
+    # info sessions / meetings / social
+    "info session", "info sess", "cruising info", "crew info", "meeting",
+    "awards", "mbsa", "history",
+]
+
+def non_sailing_event(title):
+    tl = (title or "").lower()
+    return any(k in tl for k in NON_SAILING_KEYWORDS)
+
+
 def get_all_participant_data(year, month):
     urls = get_trip_urls(year, month)
     data=[]
     for url in urls:
-        page = urlopen(url)
-        html_bytes = page.read()
-        html = html_bytes.decode("utf-8", errors='ignore')
+        try:
+            page = urlopen(url)
+            html_bytes = page.read()
+            html = html_bytes.decode("utf-8", errors='ignore')
 
-        title = get_title(html)
-        start, end, hours = get_time_data(html)
-        racing = is_racing(html)
-        participants = get_participant_status(html)
-        skippers=get_skippers(html)
-        sailors = participants + skippers
+            event_id = get_event_id(url)
+            title = get_title(html)
+            start, end, hours = get_time_data(html)
+            racing = is_racing(html)
+            participants = get_participant_status(html)
+            skippers=get_skippers(html)
+            sailors = participants + skippers
+        except Exception as err:
+            # Some calendar entries (e.g. work days / all-day events) don't
+            # parse cleanly; skip them rather than aborting the whole scrape.
+            print(f"  WARNING: skipping {url}: {err}")
+            continue
 
         for last_name, first_name, status in sailors:
             data.append({
+                "event id": event_id,
                 "first name": first_name,
                 "last name": last_name,
                 "trip name": title,
@@ -143,31 +186,68 @@ def get_all_participant_data(year, month):
             })
 
     df = pd.DataFrame(data, columns=[
-        "first name", "last name", "trip name", "start", "end", "duration", "race", "status"
+        "event id", "first name", "last name", "trip name", "start", "end", "duration", "race", "status"
     ])
+    if not df.empty:
+        # Drop river sails and non-sailing entries (work days, classes, meetings),
+        # plus any exact duplicate rows within this month.
+        df = df[~df["trip name"].apply(river_sail)]
+        df = df[~df["trip name"].apply(non_sailing_event)]
+        df = df.drop_duplicates(
+            subset=["event id", "first name", "last name", "trip name",
+                    "start", "end", "duration", "race", "status"],
+            keep="first",
+        )
+        df = df.reset_index(drop=True)
     return df
 
 
 
-columns = [
+def main():
+  columns = [
     "first name", "last name", "number registrations", "number sails",
     "number races", "number pleasure", "number multi-day",
     "number full day (6+ hr)", "number as skipper", "total sail time (hrs)"
-]
-df_final = pd.DataFrame(columns=columns)
+  ]
+  df_final = pd.DataFrame(columns=columns)
 
-start_year = 2007
-start_month = 1
-end_year = 2024
-end_month = 11 # December 2024 doesn't exist, and defaults to September 2024. https://sailing.mit.edu/calendar/index.php?cal=month&year=2024&month=12
+  # Event-level records are accumulated here and written to sailing_events.csv
+  # so downstream tools can aggregate over arbitrary date ranges and build
+  # per-person sail histories.
+  event_frames = []
 
-for year in range(start_year, end_year+1):
+  # Start defaults to the beginning of the program but can be overridden with
+  # SCRAPE_START_YEAR / SCRAPE_START_MONTH so a scheduled job can scrape just the
+  # recent window (e.g. the last year) and merge it into the existing dataset.
+  start_year = int(os.environ.get("SCRAPE_START_YEAR", "2007"))
+  start_month = int(os.environ.get("SCRAPE_START_MONTH", "1"))
+  # End reaches SCRAPE_MONTHS_AHEAD months past the present month (default 2) so
+  # upcoming sails that are open for registration are captured too. This also
+  # keeps a scheduled run current automatically (through 2027 and beyond).
+  now = datetime.now()
+  months_ahead = int(os.environ.get("SCRAPE_MONTHS_AHEAD", "2"))
+  end_index = now.year * 12 + (now.month - 1) + months_ahead
+  end_year = end_index // 12
+  end_month = end_index % 12 + 1
+
+  # A future month that doesn't exist on the MIT calendar yet silently defaults
+  # to the current month, re-returning events we've already scraped. Track the
+  # event ids we've seen and drop repeats so they aren't counted twice.
+  seen_event_ids = set()
+
+  for year in range(start_year, end_year+1):
     for month in range(1, 13):
         if year == start_year and month < start_month:
             continue
         if year == end_year and month > end_month:
             break
+        print(f"Scraping {year}-{month:02d} ...", flush=True)
         df_all = get_all_participant_data(year, month)
+        if not df_all.empty:
+            df_all = df_all[~df_all["event id"].isin(seen_event_ids)]
+            seen_event_ids.update(df_all["event id"].unique())
+            df_all = df_all.reset_index(drop=True)
+        event_frames.append(df_all)
         for index, row in df_all.iterrows():
             first_name = row["first name"]
             last_name = row["last name"]
@@ -220,7 +300,15 @@ for year in range(start_year, end_year+1):
 
 
 
-df_final_sorted = df_final.sort_values(by="total sail time (hrs)", ascending=False)
-# df_final_sorted = df_final.sort_values(by="number sails", ascending=False)
-print(df_final_sorted)
-df_final_sorted.to_csv("sailing_data_all_time.csv", index=False)
+  # Write the event-level records (one row per participant per event).
+  events_df = pd.concat(event_frames, ignore_index=True) if event_frames else pd.DataFrame()
+  events_df.to_csv("sailing_events.csv", index=False)
+  print(f"Wrote {len(events_df)} event-participant rows to sailing_events.csv")
+
+  df_final_sorted = df_final.sort_values(by="total sail time (hrs)", ascending=False)
+  print(df_final_sorted)
+  df_final_sorted.to_csv("sailing_data_all_time.csv", index=False)
+
+
+if __name__ == "__main__":
+    main()
