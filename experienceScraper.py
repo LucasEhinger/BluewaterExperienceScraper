@@ -120,6 +120,10 @@ def get_event_id(url):
     match = re.search(r'[?&]id=([0-9a-fA-F]+)', url)
     return match.group(1) if match else url
 
+def river_sail(title):
+    # River sails aren't part of the bluewater keelboat program; exclude them.
+    return "river" in (title or "").lower()
+
 
 def get_all_participant_data(year, month):
     urls = get_trip_urls(year, month)
@@ -159,6 +163,16 @@ def get_all_participant_data(year, month):
     df = pd.DataFrame(data, columns=[
         "event id", "first name", "last name", "trip name", "start", "end", "duration", "race", "status"
     ])
+    if not df.empty:
+        # Drop river sails (not part of the bluewater program) and any exact
+        # duplicate rows within this month.
+        df = df[~df["trip name"].apply(river_sail)]
+        df = df.drop_duplicates(
+            subset=["event id", "first name", "last name", "trip name",
+                    "start", "end", "duration", "race", "status"],
+            keep="first",
+        )
+        df = df.reset_index(drop=True)
     return df
 
 
@@ -181,11 +195,19 @@ def main():
   # recent window (e.g. the last year) and merge it into the existing dataset.
   start_year = int(os.environ.get("SCRAPE_START_YEAR", "2007"))
   start_month = int(os.environ.get("SCRAPE_START_MONTH", "1"))
-  # End is always the present month, so a scheduled run stays current
-  # automatically (through 2027 and beyond) without bumping the date by hand.
+  # End reaches SCRAPE_MONTHS_AHEAD months past the present month (default 2) so
+  # upcoming sails that are open for registration are captured too. This also
+  # keeps a scheduled run current automatically (through 2027 and beyond).
   now = datetime.now()
-  end_year = now.year
-  end_month = now.month
+  months_ahead = int(os.environ.get("SCRAPE_MONTHS_AHEAD", "2"))
+  end_index = now.year * 12 + (now.month - 1) + months_ahead
+  end_year = end_index // 12
+  end_month = end_index % 12 + 1
+
+  # A future month that doesn't exist on the MIT calendar yet silently defaults
+  # to the current month, re-returning events we've already scraped. Track the
+  # event ids we've seen and drop repeats so they aren't counted twice.
+  seen_event_ids = set()
 
   for year in range(start_year, end_year+1):
     for month in range(1, 13):
@@ -195,6 +217,10 @@ def main():
             break
         print(f"Scraping {year}-{month:02d} ...", flush=True)
         df_all = get_all_participant_data(year, month)
+        if not df_all.empty:
+            df_all = df_all[~df_all["event id"].isin(seen_event_ids)]
+            seen_event_ids.update(df_all["event id"].unique())
+            df_all = df_all.reset_index(drop=True)
         event_frames.append(df_all)
         for index, row in df_all.iterrows():
             first_name = row["first name"]
