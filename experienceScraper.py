@@ -6,6 +6,7 @@
 
 # There are better ways to organize this code, but I'm lazy and it runs quickly enough
 
+import os
 import pandas as pd
 import re
 from urllib.request import urlopen
@@ -175,11 +176,13 @@ def main():
   # per-person sail histories.
   event_frames = []
 
-  start_year = 2007
-  start_month = 1
-  # Scrape from the start year through the present month. Using the current
-  # date keeps the dataset up to date automatically (through 2027 and beyond)
-  # when run on a schedule, without needing to bump the end date by hand.
+  # Start defaults to the beginning of the program but can be overridden with
+  # SCRAPE_START_YEAR / SCRAPE_START_MONTH so a scheduled job can scrape just the
+  # recent window (e.g. the last year) and merge it into the existing dataset.
+  start_year = int(os.environ.get("SCRAPE_START_YEAR", "2007"))
+  start_month = int(os.environ.get("SCRAPE_START_MONTH", "1"))
+  # End is always the present month, so a scheduled run stays current
+  # automatically (through 2027 and beyond) without bumping the date by hand.
   now = datetime.now()
   end_year = now.year
   end_month = now.month
