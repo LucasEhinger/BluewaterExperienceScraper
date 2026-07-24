@@ -76,7 +76,7 @@ def is_racing(html):
         return False
     description=description.group(1).strip()
 
-    keywords = ["race", "regatta", "cup"]
+    keywords = ["race", "racing", "regatta", "cup"]
     text = description + get_title(html)
     lower_text = text.lower()
     return any(keyword in lower_text for keyword in keywords)
