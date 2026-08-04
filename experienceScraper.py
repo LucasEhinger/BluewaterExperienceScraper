@@ -7,18 +7,36 @@
 # There are better ways to organize this code, but I'm lazy and it runs quickly enough
 
 import os
+import time
 import pandas as pd
 import re
 from urllib.request import urlopen
 from datetime import datetime
 
+# The MIT calendar server drops the occasional request. Every fetch goes through
+# fetch_html so a transient blip retries instead of failing the whole scrape --
+# a half-scraped run is worse than a slow one, since downstream tools replace
+# their whole date window with whatever we produce.
+FETCH_TIMEOUT = 30
+FETCH_ATTEMPTS = 3
+FETCH_BACKOFF = 5  # seconds, multiplied by the attempt number
+
+
+def fetch_html(url):
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            html_bytes = urlopen(url, timeout=FETCH_TIMEOUT).read()
+            return html_bytes.decode("utf-8", errors='ignore')
+        except Exception as err:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+            print(f"  WARNING: fetch failed ({err}); retry {attempt}/{FETCH_ATTEMPTS - 1} for {url}", flush=True)
+            time.sleep(FETCH_BACKOFF * attempt)
+
 
 def get_trip_urls(year,month):
     url = f"http://sailing.mit.edu/calendar/index.php?cal=month&year={year}&month={month}&type=13"
-    page = urlopen(url)
-
-    html_bytes = page.read()
-    html = html_bytes.decode("utf-8", errors='ignore')
+    html = fetch_html(url)
 
     pattern = r"(/calendar/events/event[^']*')"
     matches = re.findall(pattern, html)
@@ -73,7 +91,8 @@ def is_racing(html):
     if match:
         try:
             event_url = "http://sailing.mit.edu/calendar/events/event.php" + match.group(1)
-            event_html = urlopen(event_url).read().decode("utf-8", errors='ignore')
+            # Best-effort extra signal, so a single attempt is enough here.
+            event_html = urlopen(event_url, timeout=FETCH_TIMEOUT).read().decode("utf-8", errors='ignore')
             description = re.search(r'<h2>Description</h2>(.*?)<h2>Organizers</h2>', event_html, re.DOTALL)
             if description:
                 text += " " + description.group(1)
@@ -155,9 +174,7 @@ def get_all_participant_data(year, month):
     data=[]
     for url in urls:
         try:
-            page = urlopen(url)
-            html_bytes = page.read()
-            html = html_bytes.decode("utf-8", errors='ignore')
+            html = fetch_html(url)
 
             event_id = get_event_id(url)
             title = get_title(html)
